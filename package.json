@@ -1,16 +1,19 @@
 {
+  "homepage": "https://Brijeshkasaudhan.github.io/JoinSKill",
   "name": "joinskill",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "concurrently -k -n API,WEB -c green,cyan \"npm run server\" \"npm run client\"",
-    "server": "node server/index.js",
-    "client": "vite --host 127.0.0.1",
-    "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1",
-    "start": "node server/index.js"
-  },
+ "scripts": {
+  "dev": "concurrently -k -n API,WEB -c green,cyan \"npm run server\" \"npm run client\"",
+  "server": "node server/index.js",
+  "client": "vite --host 127.0.0.1",
+  "build": "vite build",
+  "preview": "vite preview --host 127.0.0.1",
+  "start": "node server/index.js",
+  "predeploy": "npm run build",
+  "deploy": "gh-pages -d dist"
+},
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.2",
     "bcryptjs": "^2.4.3",
@@ -31,4 +34,5 @@
   "devDependencies": {
     "gh-pages": "^6.3.0"
   }
+
 }
