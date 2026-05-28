@@ -17,8 +17,15 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 const CLIENT_ORIGINS = process.env.CLIENT_ORIGIN
-  ? process.env.CLIENT_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean)
-  : ["http://localhost:5173", "http://127.0.0.1:5173"];
+  ? process.env.CLIENT_ORIGIN
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+  : [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "https://join-s-kill-un8k.vercel.app"
+    ];
 const JWT_SECRET = process.env.JWT_SECRET || "joinskill-local-secret-change-me";
 const dataFile = path.join(__dirname, "data", "db.json");
 const uploadDir = path.join(__dirname, "uploads");
