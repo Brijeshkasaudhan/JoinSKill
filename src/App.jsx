@@ -33,7 +33,7 @@ import {
   X
 } from "lucide-react";
 
-const API_BASE = import.meta.env.VITE_API_URL;
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -757,12 +757,11 @@ function DiscoverView({ token, onMessage, onVideo }) {
   );
 }
 
-function MessagesView({ token, user, activeConversationId, onConversationSelected }) {
+function MessagesView({ token, user, activeConversationId, onConversationSelected, socket }) {
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(activeConversationId || "");
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
-  const socketRef = useRef(null);
 
   async function loadConversations() {
     const data = await apiRequest("/api/conversations", { token });
@@ -794,18 +793,20 @@ function MessagesView({ token, user, activeConversationId, onConversationSelecte
   }, [activeId]);
 
   useEffect(() => {
-    const socket = io(API_BASE);
-    socketRef.current = socket;
-    socket.emit("join:user", user.id);
-    socket.on("message:new", ({ conversationId, message }) => {
+    if (!socket) return;
+    
+    const handleMessageNew = ({ conversationId, message }) => {
       if (conversationId === activeId) {
         setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
       }
       loadConversations();
-    });
+    };
 
-    return () => socket.disconnect();
-  }, [user.id, activeId]);
+    socket.on("message:new", handleMessageNew);
+    return () => {
+      socket.off("message:new", handleMessageNew);
+    };
+  }, [socket, activeId]);
 
   async function sendMessage(event) {
     event.preventDefault();
@@ -1095,12 +1096,65 @@ function LoadingPanel({ label }) {
   );
 }
 
-function VideoSessionModal({ session, participant, onClose }) {
+function VideoSessionModal({ session, participant, socket, user, onClose }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+
   const [cameraOn, setCameraOn] = useState(false);
   const [micOn, setMicOn] = useState(true);
   const [error, setError] = useState("");
+  const [remoteStream, setRemoteStream] = useState(null);
+
+  const isHost = user.id === session.hostId;
+  const remotePeerId = isHost ? session.participantId : session.hostId;
+  const [callStatus, setCallStatus] = useState(isHost ? "Calling..." : "Connecting...");
+  const remoteReadyRef = useRef(false);
+
+  const initiateCall = async (localStream) => {
+    setCallStatus("Connected");
+    const pc = createPeerConnection(localStream);
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket?.emit("webrtc:signal", { to: remotePeerId, signal: { offer } });
+    } catch (err) {
+      console.error("Failed to create offer:", err);
+    }
+  };
+
+  const createPeerConnection = (localStream) => {
+    if (peerConnectionRef.current) {
+      return peerConnectionRef.current;
+    }
+
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" }
+      ]
+    });
+
+    localStream.getTracks().forEach((track) => {
+      pc.addTrack(track, localStream);
+    });
+
+    pc.ontrack = (event) => {
+      if (event.streams && event.streams[0]) {
+        setRemoteStream(event.streams[0]);
+      }
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket?.emit("webrtc:signal", { to: remotePeerId, signal: { candidate: event.candidate } });
+      }
+    };
+
+    peerConnectionRef.current = pc;
+    return pc;
+  };
 
   async function startCamera() {
     try {
@@ -1111,6 +1165,14 @@ function VideoSessionModal({ session, participant, onClose }) {
       }
       setCameraOn(true);
       setMicOn(true);
+
+      if (!isHost) {
+        socket?.emit("webrtc:signal", { to: remotePeerId, signal: { ready: true } });
+      } else {
+        if (remoteReadyRef.current) {
+          initiateCall(stream);
+        }
+      }
     } catch (err) {
       setError("Camera access is not available in this browser session.");
     }
@@ -1136,10 +1198,66 @@ function VideoSessionModal({ session, participant, onClose }) {
 
   useEffect(() => {
     startCamera();
+
+    if (socket) {
+      const handleWebRTCSignal = async ({ sender, signal }) => {
+        if (sender !== remotePeerId) return;
+
+        if (signal.ready) {
+          if (isHost) {
+            if (streamRef.current) {
+              initiateCall(streamRef.current);
+            } else {
+              remoteReadyRef.current = true;
+            }
+          }
+        } else if (signal.offer) {
+          if (streamRef.current) {
+            const pc = createPeerConnection(streamRef.current);
+            try {
+              await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              socket?.emit("webrtc:signal", { to: remotePeerId, signal: { answer } });
+              setCallStatus("Connected");
+            } catch (err) {
+              console.error("Error handling offer:", err);
+            }
+          }
+        } else if (signal.answer) {
+          if (peerConnectionRef.current) {
+            try {
+              await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal.answer));
+            } catch (err) {
+              console.error("Error setting remote description:", err);
+            }
+          }
+        } else if (signal.candidate) {
+          if (peerConnectionRef.current) {
+            try {
+              await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(signal.candidate));
+            } catch (err) {
+              console.error("Error adding ice candidate:", err);
+            }
+          }
+        }
+      };
+
+      socket.on("webrtc:signal", handleWebRTCSignal);
+
+      return () => {
+        socket.off("webrtc:signal", handleWebRTCSignal);
+        streamRef.current?.getTracks?.().forEach((track) => track.stop());
+        if (peerConnectionRef.current) {
+          peerConnectionRef.current.close();
+        }
+      };
+    }
+
     return () => {
       streamRef.current?.getTracks?.().forEach((track) => track.stop());
     };
-  }, []);
+  }, [socket, isHost, remotePeerId]);
 
   return (
     <div className="modal-backdrop">
@@ -1158,9 +1276,24 @@ function VideoSessionModal({ session, participant, onClose }) {
             <Pill tone="mint">You</Pill>
           </div>
           <div className="video-tile remote">
-            <Avatar user={participant} size="lg" />
-            <strong>{participant?.profile.fullName}</strong>
-            <Pill tone="blue">{session.roomId}</Pill>
+            {remoteStream ? (
+              <video
+                autoPlay
+                playsInline
+                ref={(el) => {
+                  remoteVideoRef.current = el;
+                  if (el && remoteStream) {
+                    el.srcObject = remoteStream;
+                  }
+                }}
+              />
+            ) : (
+              <>
+                <Avatar user={participant} size="lg" />
+                <strong>{participant?.profile.fullName}</strong>
+                <Pill tone="blue">{callStatus}</Pill>
+              </>
+            )}
           </div>
         </div>
         {error && <div className="error-box">{error}</div>}
@@ -1181,6 +1314,8 @@ function AppShell({ user, token, setUser, onLogout }) {
   const [dashboard, setDashboard] = useState(null);
   const [activeConversationId, setActiveConversationId] = useState("");
   const [videoSession, setVideoSession] = useState(null);
+  const [incomingCall, setIncomingCall] = useState(null);
+  const socketRef = useRef(null);
 
   async function loadDashboard() {
     const data = await apiRequest("/api/dashboard", { token });
@@ -1190,6 +1325,31 @@ function AppShell({ user, token, setUser, onLogout }) {
   useEffect(() => {
     loadDashboard();
   }, [user.id, user.profileScore]);
+
+  useEffect(() => {
+    const socket = io(API_BASE);
+    socketRef.current = socket;
+
+    socket.emit("join:user", user.id);
+
+    socket.on("session:invite", ({ session, host }) => {
+      setIncomingCall({ session, host });
+    });
+
+    socket.on("session:decline", () => {
+      setVideoSession(null);
+      setIncomingCall(null);
+    });
+
+    socket.on("session:end", () => {
+      setVideoSession(null);
+      setIncomingCall(null);
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [user.id]);
 
   async function openConversation(person) {
     const data = await apiRequest("/api/conversations", { token, method: "POST", body: { participantId: person.id } });
@@ -1202,6 +1362,28 @@ function AppShell({ user, token, setUser, onLogout }) {
     const data = await apiRequest("/api/video-sessions", { token, method: "POST", body: { participantId: person.id, skill } });
     setVideoSession({ session: data.session, participant: data.participant });
     loadDashboard();
+  }
+
+  function handleAcceptCall() {
+    if (!incomingCall) return;
+    const { session, host } = incomingCall;
+    socketRef.current?.emit("session:accept", { to: host.id, session });
+    setVideoSession({ session, participant: host });
+    setIncomingCall(null);
+  }
+
+  function handleDeclineCall() {
+    if (!incomingCall) return;
+    const { session, host } = incomingCall;
+    socketRef.current?.emit("session:decline", { to: host.id, session });
+    setIncomingCall(null);
+  }
+
+  function handleEndCall() {
+    if (!videoSession) return;
+    const { session, participant } = videoSession;
+    socketRef.current?.emit("session:end", { to: participant.id, session });
+    setVideoSession(null);
   }
 
   function updateUser(nextUser) {
@@ -1268,14 +1450,48 @@ function AppShell({ user, token, setUser, onLogout }) {
         )}
         {activeView === "discover" && <DiscoverView token={token} onMessage={openConversation} onVideo={openVideo} />}
         {activeView === "messages" && (
-          <MessagesView token={token} user={user} activeConversationId={activeConversationId} onConversationSelected={setActiveConversationId} />
+          <MessagesView token={token} user={user} activeConversationId={activeConversationId} onConversationSelected={setActiveConversationId} socket={socketRef.current} />
         )}
         {activeView === "tests" && <SkillTestsView token={token} user={user} onUserUpdate={updateUser} />}
         {activeView === "recommendations" && <RecommendationsView dashboard={dashboard} />}
         {activeView === "profile" && <ProfileEditor user={user} token={token} onUserUpdate={updateUser} />}
       </section>
 
-      {videoSession && <VideoSessionModal {...videoSession} onClose={() => setVideoSession(null)} />}
+      {videoSession && (
+        <VideoSessionModal
+          session={videoSession.session}
+          participant={videoSession.participant}
+          socket={socketRef.current}
+          user={user}
+          onClose={handleEndCall}
+        />
+      )}
+
+      {incomingCall && (
+        <div className="modal-backdrop incoming-call-backdrop">
+          <div className="incoming-call-card">
+            <div className="caller-avatar-container">
+              <div className="pulse-ring ring-1"></div>
+              <div className="pulse-ring ring-2"></div>
+              <div className="pulse-ring ring-3"></div>
+              <Avatar user={incomingCall.host} size="lg" />
+            </div>
+            <h3>Incoming Video Call</h3>
+            <p className="caller-name">{incomingCall.host?.profile.fullName || incomingCall.host?.username}</p>
+            <p className="call-skill">wants to pair learn: <strong>{incomingCall.session.skill}</strong></p>
+            <div className="call-actions">
+              <button className="call-btn decline" onClick={handleDeclineCall}>
+                <VideoOff size={18} />
+                <span>Decline</span>
+              </button>
+              <button className="call-btn accept" onClick={handleAcceptCall}>
+                <Video size={18} />
+                <span>Accept</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

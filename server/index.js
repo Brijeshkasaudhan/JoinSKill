@@ -1065,12 +1065,37 @@ io.on("connection", (socket) => {
   socket.on("join:user", (userId) => {
     if (userId) {
       socket.join(userId);
+      socket.userId = userId;
     }
   });
 
   socket.on("typing", ({ conversationId, to }) => {
     if (to) {
       socket.to(to).emit("typing", { conversationId });
+    }
+  });
+
+  socket.on("session:accept", ({ to, session }) => {
+    if (to) {
+      socket.to(to).emit("session:accept", { session });
+    }
+  });
+
+  socket.on("session:decline", ({ to, session }) => {
+    if (to) {
+      socket.to(to).emit("session:decline", { session });
+    }
+  });
+
+  socket.on("session:end", ({ to, session }) => {
+    if (to) {
+      socket.to(to).emit("session:end", { session });
+    }
+  });
+
+  socket.on("webrtc:signal", ({ to, signal }) => {
+    if (to) {
+      socket.to(to).emit("webrtc:signal", { sender: socket.userId || "", signal });
     }
   });
 });
