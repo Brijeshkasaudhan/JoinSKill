@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import {
+  ArrowLeft,
   Award,
   BarChart3,
   BookOpen,
@@ -757,7 +758,7 @@ function DiscoverView({ token, onMessage, onVideo }) {
   );
 }
 
-function MessagesView({ token, user, activeConversationId, onConversationSelected, socket }) {
+function MessagesView({ token, user, activeConversationId, onConversationSelected, socket, onVideo }) {
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(activeConversationId || "");
   const [messages, setMessages] = useState([]);
@@ -821,7 +822,7 @@ function MessagesView({ token, user, activeConversationId, onConversationSelecte
   const activeConversation = conversations.find((conversation) => conversation.id === activeId);
 
   return (
-    <div className="messages-layout">
+    <div className={classNames("messages-layout", activeId && "has-active-chat")}>
       <aside className="conversation-list">
         <div className="panel-title compact">
           <div>
@@ -849,10 +850,18 @@ function MessagesView({ token, user, activeConversationId, onConversationSelecte
         {activeConversation ? (
           <>
             <header className="chat-header">
+              <button type="button" className="chat-back-button" onClick={() => setActiveId("")}>
+                <ArrowLeft size={20} />
+              </button>
               <Avatar user={activeConversation.participant} />
-              <div>
-                <h2>{activeConversation.participant?.profile.fullName}</h2>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <h2 style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', margin: 0 }}>
+                  {activeConversation.participant?.profile.fullName}
+                </h2>
                 <span>{activeConversation.participant?.profile.availability}</span>
+              </div>
+              <div className="chat-header-actions" style={{ display: 'flex', gap: '8px' }}>
+                <IconButton icon={Video} label="Video call" onClick={() => onVideo?.(activeConversation.participant)} />
               </div>
             </header>
             <div className="message-feed">
@@ -1395,6 +1404,25 @@ function AppShell({ user, token, setUser, onLogout }) {
 
   return (
     <main className="app-shell">
+      <header className="mobile-header">
+        <div className="brand-lockup small">
+          <div className="brand-mark">
+            <GraduationCap size={20} />
+          </div>
+          <div>
+            <p>JoinSkill</p>
+          </div>
+        </div>
+        <div className="mobile-header-actions">
+          <button type="button" className="mobile-profile-trigger" onClick={() => setActiveView("profile")}>
+            <Avatar user={user} size="sm" />
+          </button>
+          <button className="mobile-logout" type="button" onClick={onLogout} aria-label="Logout">
+            <LogOut size={18} />
+          </button>
+        </div>
+      </header>
+
       <aside className="sidebar">
         <div className="brand-lockup small">
           <div className="brand-mark">
@@ -1450,12 +1478,34 @@ function AppShell({ user, token, setUser, onLogout }) {
         )}
         {activeView === "discover" && <DiscoverView token={token} onMessage={openConversation} onVideo={openVideo} />}
         {activeView === "messages" && (
-          <MessagesView token={token} user={user} activeConversationId={activeConversationId} onConversationSelected={setActiveConversationId} socket={socketRef.current} />
+          <MessagesView token={token} user={user} activeConversationId={activeConversationId} onConversationSelected={setActiveConversationId} socket={socketRef.current} onVideo={openVideo} />
         )}
         {activeView === "tests" && <SkillTestsView token={token} user={user} onUserUpdate={updateUser} />}
         {activeView === "recommendations" && <RecommendationsView dashboard={dashboard} />}
         {activeView === "profile" && <ProfileEditor user={user} token={token} onUserUpdate={updateUser} />}
       </section>
+
+      <nav className="mobile-bottom-nav">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              type="button"
+              className={classNames(activeView === item.id && "active")}
+              key={item.id}
+              onClick={() => {
+                setActiveView(item.id);
+                if (item.id !== "messages") {
+                  setActiveConversationId("");
+                }
+              }}
+            >
+              <Icon size={20} />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       {videoSession && (
         <VideoSessionModal
